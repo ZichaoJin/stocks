@@ -383,7 +383,7 @@ git commit -m "feat: add read-only Moomoo market data adapter"
 
 **Interfaces:**
 - Consumes `EdgarProvider`, `MarketDataProvider`, and `Repository`.
-- Produces `SyncService.sync_security(code, today) -> SyncResult` and `SyncResult` counts/errors/staleness.
+- Produces `SyncService.sync_security(code, today) -> SyncResult`, which backfills five years of daily bars on a security's first successful sync and requests only the latest eight calendar days on later syncs.
 
 - [ ] **Step 1: Write a failing full-flow sync test.**
 
@@ -395,6 +395,10 @@ def test_sync_saves_changed_consensus_and_creates_earnings_review_alert(reposito
     assert result.facts_upserted == 2
     assert result.estimates_inserted == 1
     assert repository.open_alert_titles("US.NVDA") == ["Review earnings guidance and management commentary"]
+
+def test_first_sync_requests_five_year_daily_history(repository, fake_market, fake_edgar):
+    SyncService(repository, fake_market, fake_edgar).sync_security("US.NVDA", date(2026, 9, 10))
+    assert fake_market.daily_bar_requests == [("US.NVDA", date(2021, 9, 10), date(2026, 9, 10))]
 ```
 
 - [ ] **Step 2: Run the test.**
@@ -408,7 +412,8 @@ Expected: FAIL because `SyncService` is undefined.
 def sync_security(self, code: str, today: date) -> SyncResult:
     self.repository.mark_sync_started(code, today)
     try:
-        bars = self.market.daily_bars(code, today - timedelta(days=8), today)
+        start = today - timedelta(days=365 * 5) if not self.repository.has_daily_bars(code) else today - timedelta(days=8)
+        bars = self.market.daily_bars(code, start, today)
         facts = self.edgar.fetch_company_facts(self.repository.cik_for(code))
         consensus = self.market.earnings_consensus(code)
         result = self.repository.persist_sync_batch(code, bars, facts, consensus, today)
